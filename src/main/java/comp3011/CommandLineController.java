@@ -81,18 +81,60 @@ public class CommandLineController {
     private void parse() {
         List<String> videoFiles = new ArrayList<>();
         for (String arg : args) {
-            if ("-h".equals(arg) || "--help".equals(arg)) {
-                helpRequested = true;
-            } else if ("-a".equals(arg) || "--audio".equals(arg)) {
-                audioRequested = true;
-            } else if ("-x".equals(arg) || "--maximise".equals(arg)) {
-                maximiseRequested = true;
-            } else if ("-1".equals(arg) || "--monitor-1".equals(arg)) {
-                setDisplayId(1);
-            } else if ("-2".equals(arg) || "--monitor-2".equals(arg)) {
-                setDisplayId(2);
+            // handles long commands
+            if (arg.startsWith("--")) {
+                switch (arg) {
+                    case "--help" -> helpRequested = true;
+                    case "--audio" -> audioRequested = true;
+                    case "--maximise" -> maximiseRequested = true;
+                    case "--monitor-1" -> setDisplayId(1);
+                    case "--monitor-2" -> setDisplayId(2);
+
+                    // frame processors
+                    case "--number-frames" -> frameProcessors.add(new FrameNumberer());
+                    case "--scratch-frames" -> frameProcessors.add(new FrameScratcher());
+                    case "--flicker-frames" -> frameProcessors.add(new FrameFlickerer());
+                    case "--black-and-white" -> frameProcessors.add(new FrameBlackAndWhiter());
+                    case "--yellow-frames" -> frameProcessors.add(new FrameYellower());
+                    case "--vignette-frames" -> frameProcessors.add(new FrameVignetter());
+                    case "--dust-frames" -> frameProcessors.add(new FrameDuster());
+                    case "--jitter-frames" -> frameProcessors.add(new FrameJitterer());
+                    case "--mottle-frames" -> frameProcessors.add(new FrameMottler());
+                    case "--bleed-frames" -> frameProcessors.add(new FrameBleeder());
+                    case "--pepper-frames" -> frameProcessors.add(new FramePepperer());
+                    default -> errorMessage = "Unknown option: " + arg;
+                }
+
+            // handles short commands with stacked options
+            } else if (arg.startsWith("-") && arg.length() > 1) {
+
+                for (char option : arg.substring(1).toCharArray()) {
+                    switch (option) {
+                        case 'h' -> helpRequested = true;
+                        case 'a' -> audioRequested = true;
+                        case 'x' -> maximiseRequested = true;
+                        case '1' -> setDisplayId(1);
+                        case '2' -> setDisplayId(2);
+
+                        // frame processors
+                        case 'n' -> frameProcessors.add(new FrameNumberer());
+                        case 's' -> frameProcessors.add(new FrameScratcher());
+                        case 'f' -> frameProcessors.add(new FrameFlickerer());
+                        case 'w' -> frameProcessors.add(new FrameBlackAndWhiter());
+                        case 'y' -> frameProcessors.add(new FrameYellower());
+                        case 'v' -> frameProcessors.add(new FrameVignetter());
+                        case 'd' -> frameProcessors.add(new FrameDuster());
+                        case 'j' -> frameProcessors.add(new FrameJitterer());
+                        case 'm' -> frameProcessors.add(new FrameMottler());
+                        case 'b' -> frameProcessors.add(new FrameBleeder());
+                        case 'p' -> frameProcessors.add(new FramePepperer());
+                        default -> errorMessage = "Unknown option: -" + option;
+                    }
+                }
+
             } else if (arg.startsWith("-")) {
                 errorMessage = "Unknown option: " + arg;
+
             } else {
                 videoFiles.add(arg);
             }
