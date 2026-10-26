@@ -17,6 +17,8 @@ import java.util.List;
 import java.util.Queue;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.bytedeco.javacv.Frame;
@@ -44,6 +46,12 @@ public class VideoPlayerModel {
     private static final long AUDIO_LEAD_NS = 30_000_000L;
 
     private final List<FrameProcessor> frameProcessors;
+    
+    // Runtime.getRuntime().avaliableProcessors() determines how many processors Java has available
+    // Math.max(1, etc) will ensure that one worked will always be available even only if one processor is available
+    private final ExecutorService frameExecutor = Executors.newFixedThreadPool(
+    		Math.max(1, Runtime.getRuntime().availableProcessors() -1));
+    
     private final Queue<PendingAudio> pendingAudio = new ArrayDeque<>();
     private final BiConsumer<Integer, Integer> videoSizeChangedHandler;
     private final Consumer<Image> frameReadyHandler;
@@ -172,6 +180,8 @@ public class VideoPlayerModel {
 
     public void shutdown() {
         closePlaybackResources();
+        // requests cancellation of running tasks, and will shut down pool when app exits.
+        frameExecutor.shutdownNow();
     }
 
     private void seekRelative(long offsetUs) {
