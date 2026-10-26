@@ -294,13 +294,24 @@ public class VideoPlayerModel {
         }
 
         try {
-            preparedFrame = readNextVideoFrame();
+        	FrameWork nextFrame = readNextVideoFrame();
+        	
+        	if (nextFrame != null) {
+        		preparedFrame = frameProcessAndConvert(
+        				nextFrame.frame(),
+        				nextFrame.info(),
+        				nextFrame.logicalTimestampUs(),
+        				nextFrame.targetTimeNs());
+        	}
+        	
+        	
         } catch (Exception e) {
             handlePlaybackError(e);
         }
     }
-
-    private PreparedFrame readNextVideoFrame() throws Exception {
+    
+    // changed to read a FrameWork object
+    private FrameWork readNextVideoFrame() throws Exception {
         while (playbackOpen) {
             Frame frame = grabFrame();
             if (frame == null) {
@@ -349,7 +360,7 @@ public class VideoPlayerModel {
             long targetTimeNs = playbackStartNs + relativeTimestampUs * 1_000L;
             
             // no effects or conversion are currently applied in this section now
-            return frameProcessAndConvert(frame, info, logicalTimestampUs, targetTimeNs);
+            return new FrameWork(frame, info, logicalTimestampUs, targetTimeNs);
         }
 
         return null;
@@ -417,7 +428,7 @@ public class VideoPlayerModel {
 
     private void displayPreparedFrame(long now) {
         PreparedFrame frame = preparedFrame;
-        preparedFrame = null;
+        preparedFrame = null;s
         currentTimestampUs = frame.logicalTimestampUs();
         relativeSeekBaseUs = NO_SEEK_REQUEST;
 
@@ -622,6 +633,15 @@ public class VideoPlayerModel {
             long targetTimeNs,
             long preparedAtNs) {
     }
+    
+    // stores the frame data and timing for independant processing
+    private record FrameWork(
+    		Frame frame,
+    		InfoFrame info,
+    		long logicalTimestampUs,
+    		long targetTimeNs) {
+    }
+    	
 
     private static class PendingAudio {
         private final long timestampUs;
