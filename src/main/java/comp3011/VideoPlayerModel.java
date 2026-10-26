@@ -343,23 +343,39 @@ public class VideoPlayerModel {
 
             int frameNumber = grabber.getFrameNumber();
             InfoFrame info = new InfoFrame(frameNumber, timestampUs);
-            processFrame(frame, info);
-
-            Image image = converter.convert(frame);
-            long relativeTimestampUs = Math.max(0, timestampUs - firstTimestampUs);
+            
+            long relativeTimestampUs = Math.max(0,  timestampUs - firstTimestampUs);
             long logicalTimestampUs = logicalPlaybackBaseUs + relativeTimestampUs;
             long targetTimeNs = playbackStartNs + relativeTimestampUs * 1_000L;
-
-            return new PreparedFrame(
-                    image,
-                    frameNumber,
-                    timestampUs,
-                    logicalTimestampUs,
-                    targetTimeNs,
-                    System.nanoTime());
+            
+            // no effects or conversion are currently applied in this section now
+            return frameProcessAndConvert(frame, info, logicalTimestampUs, targetTimeNs);
         }
 
         return null;
+    }
+    
+    // separating the frame processing from the decoding for multithreaded execution
+    private PreparedFrame frameProcessAndConvert(
+    		Frame frame,
+    		InfoFrame info,
+    		long logicalTimestampUs,
+    		long targetTimeNs) throws Exception {
+    	
+    	// applies all the selected effects in order
+    	processFrame(frame, info);
+    	// converts the processed frame into the JavaFx image
+    	Image image = converter.convert(frame);
+    	
+    	// returns the instance of the completed frame as a PreparedFrames
+    	return new PreparedFrame(
+    			image,
+    			info.frameNumber(),
+    			info.timestampUs(),
+    			logicalTimestampUs,
+    			targetTimeNs,
+    			System.nanoTime()
+    			);
     }
 
     // This is called on a heart beat by the GUI thread. We want to be co-operative here by (a) not blocking, and (b)
