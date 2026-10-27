@@ -28,20 +28,17 @@ import org.bytedeco.javacv.Frame;
 public class FrameFlickerer extends FrameProcessor {
     private static final double FLICKER_PERCENTAGE_SD = 5.0;
 
-    private static int nextInstanceIndex;
-
-    private final int instanceIndex;
     private int mediaSeed;
+    
 
     public FrameFlickerer() {
         super();
-        instanceIndex = nextInstanceIndex++;
     }
 
     @Override
     public void initialise(InfoVideo videoInfo) throws Exception {
         super.initialise(videoInfo);
-        mediaSeed = saltedMediaSeed(videoInfo.mediaName(), instanceIndex);
+        mediaSeed = saltedMediaSeed(videoInfo.mediaName(), getInstanceIndex());
     }
 
     @Override

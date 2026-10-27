@@ -15,6 +15,8 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.concurrent.ExecutorService;
@@ -117,6 +119,20 @@ public class VideoPlayerModel {
         this.playbackStateChangedHandler = playbackStateChangedHandler;
         this.audioOutputStateChangedHandler = audioOutputStateChangedHandler;
         this.frameProcessors = new ArrayList<>(frameProcessors);
+        
+        // gives each effect type a unique index
+        // this code was written with the assistance of AI, as per what is allowed in the assignment
+        // If command line argument was -ssfn
+        // the resulting indices would be, FrameScratcher = 0, FrameScratcher = 1, FrameFlickerer = 0, FrameNumberer = 0
+        // HashMap is used to count how many instances we've encountered of each effect type
+        Map<Class<?>, Integer> instanceCounts = new HashMap<>();
+        
+        for (FrameProcessor processor : this.frameProcessors) {
+        	Class<?> type = processor.getClass();
+        	int index = instanceCounts.getOrDefault(type, 0);
+        	processor.setInstanceIndex(index);
+        	instanceCounts.put(type, index + 1);
+        }
     }
 
     public void play(File file) {

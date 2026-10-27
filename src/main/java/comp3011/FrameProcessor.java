@@ -31,12 +31,22 @@ import org.bytedeco.javacv.Frame;
  */
 public abstract class FrameProcessor {
     protected InfoVideo videoInfo;
+    private int instanceIndex;
 
     public FrameProcessor() {
     }
 
     public void initialise(InfoVideo videoInfo) throws Exception {
         this.videoInfo = videoInfo;
+    }
+    
+    // giving each processor a consistent index, without having to use the shared static counter
+    public final void setInstanceIndex(int instanceIndex) {
+    	this.instanceIndex = instanceIndex;
+    }
+    
+    protected final int getInstanceIndex() {
+    	return instanceIndex;
     }
 
     // Obtain a unique seed for this media name and effect instance index. That is, for a given media name, say

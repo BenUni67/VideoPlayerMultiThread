@@ -29,22 +29,18 @@ import org.bytedeco.javacv.Frame;
 public class FrameJitterer extends FrameProcessor {
     private static final int SEED_SALT = 0x4a495454;
 
-    private static int nextInstanceIndex;
-
-    private final int instanceIndex;
     private int mediaSeed;
     private byte[] sourcePixels;
     private byte[] blackRow;
 
     public FrameJitterer() {
         super();
-        instanceIndex = nextInstanceIndex++;
     }
 
     @Override
     public void initialise(InfoVideo videoInfo) throws Exception {
         super.initialise(videoInfo);
-        mediaSeed = saltedMediaSeed(videoInfo.mediaName(), instanceIndex + SEED_SALT);
+        mediaSeed = saltedMediaSeed(videoInfo.mediaName(), getInstanceIndex() + SEED_SALT);
 
         int frameBytes = videoInfo.imageStride() * videoInfo.imageHeight();
         int widthBytes = videoInfo.imageWidth() * videoInfo.imageChannels();

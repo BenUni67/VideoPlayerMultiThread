@@ -54,9 +54,6 @@ public class FrameMottler extends FrameProcessor {
     private static final int MEDIUM_FIELD_SALT = 0x4d454449;
     private static final int LARGE_FIELD_SALT = 0x4c415247;
 
-    private static int nextInstanceIndex;
-
-    private final int instanceIndex;
     private int mediaSeed;
     private int cachedDamageMaskSegment = Integer.MIN_VALUE;
     private double[] damageMaskA;
@@ -74,13 +71,12 @@ public class FrameMottler extends FrameProcessor {
 
     public FrameMottler() {
         super();
-        instanceIndex = nextInstanceIndex++;
     }
 
     @Override
     public void initialise(InfoVideo videoInfo) throws Exception {
         super.initialise(videoInfo);
-        mediaSeed = saltedMediaSeed(videoInfo.mediaName(), instanceIndex + SEED_SALT);
+        mediaSeed = saltedMediaSeed(videoInfo.mediaName(), getInstanceIndex() + SEED_SALT);
         buildSamplingLookups();
         buildScaleLookups();
     }
