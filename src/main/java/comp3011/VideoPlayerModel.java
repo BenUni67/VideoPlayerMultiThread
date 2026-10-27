@@ -61,8 +61,17 @@ public class VideoPlayerModel {
     private final ExecutorService frameExecutor = Executors.newFixedThreadPool(
     		Math.max(1, Runtime.getRuntime().availableProcessors() -1));
     
-    // keeps track of the current frame being processed
-    private CompletableFuture<Void> processingTask;
+    // limits how many frames can be processed at once
+    // assistance by AI for this
+    private static final int MAX_IN_FLIGHT = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() - 1));
+
+    // stores processed frames until they can be displayed in the correct order
+    private final Map<Long, PreparedFrame> completedFrames = new HashMap<>();
+
+    private long nextFrameToSubmit = 0;
+    private long nextFrameToDisplay = 0;
+    private boolean decoderFinished = false;
+    
     // allows us to identify frames that aren't relevant anymore
     private long playbackGeneration = 0;
     private final Queue<PendingAudio> pendingAudio = new ArrayDeque<>();
@@ -300,7 +309,6 @@ public class VideoPlayerModel {
 
     private void resetPlaybackClock(long logicalTimestampUs) {
         playbackGeneration++;
-        processingTask = null;
     	pendingAudio.clear();
         preparedFrame = null;
         currentTimestampUs = logicalTimestampUs;
@@ -312,6 +320,11 @@ public class VideoPlayerModel {
         frameProcessorsInitialised = false;
         workerPipelines = new ConcurrentHashMap<>();
         pipelineVideoInfo = null;    
+        nextFrameToSubmit = 0;
+        nextFrameToDisplay = 0;
+        decoderFinished = false;
+        completedFrames.clear();
+        prepareNextFrameQueued = false;
         }
 
     private void resumePlaybackClock(long now) {
@@ -322,82 +335,79 @@ public class VideoPlayerModel {
     }
 
     private void prepareNextFrame() {
-        if (!playbackOpen || preparedFrame != null || processingTask != null) {
+
+        // does allow more frames than limit
+        if (!playbackOpen || decoderFinished || nextFrameToSubmit - nextFrameToDisplay >= MAX_IN_FLIGHT) {
             return;
         }
 
         try {
-        	FrameWork nextFrame = readNextVideoFrame();
-        	
-        	if (nextFrame == null) {
-        		return;
-        	}
-        	
-        	long generate = playbackGeneration;
-        	
-        	// Process the effects on the frame on a thread in the background
-        	// represents an asynchronous task that runs in the background and lets us handle its result when its done
-        	// Give this task its own reference to the current processing pipeline.
-        	// each task keeps the pipeline collection belonging to its play back
-        	Map<Thread, List<FrameProcessor>> pipelinesForTask = workerPipelines;
-        	InfoVideo videoInfoForTask = pipelineVideoInfo;
+            FrameWork nextFrame = readNextVideoFrame();
 
-        	CompletableFuture<Void> task = CompletableFuture.runAsync(() -> {
-        	    try {
-        	    	// get or create this threads its own processor pipeline
-        	        List<FrameProcessor> processors = pipelinesForTask.computeIfAbsent(
-        	                Thread.currentThread(),
-        	                thread -> {
-        	                    try {
-        	                        return FrameProcessorObject.createPipeline(frameProcessors, videoInfoForTask);
-        	                    } catch (Exception e) {
-        	                        throw new CompletionException(e);
-        	                    }
-        	                }
-        	        );
+            if (nextFrame == null) {
+                return;
+            }
 
-        	        processFrame(nextFrame.frame(), nextFrame.info(), processors);
+            // give every frame a sequence number for display order
+            long sequence = nextFrameToSubmit++;
+            long generation = playbackGeneration;
 
-        	    } catch (Exception e) {
-        	        throw new CompletionException(e);
-        	    }
-        	}, frameExecutor);
-        	
-        	processingTask = task;
+            // capture the processing pipeline belonging to this play back
+            Map<Thread, List<FrameProcessor>> pipelinesForTask = workerPipelines;
+            InfoVideo videoInfoForTask = pipelineVideoInfo;
 
-            // return to the java fx thread when processing has finished
-        	// only waiting for the task to finish, not return a result
-            task.whenComplete((result, error) -> Platform.runLater(() -> {
+            CompletableFuture<Void> task = CompletableFuture.runAsync(() -> {
+                try {
 
-                if (processingTask == task) {
-                    processingTask = null;
+                    // each worker thread uses its own processor 
+                    List<FrameProcessor> processors = pipelinesForTask.computeIfAbsent(
+                            Thread.currentThread(),
+                            thread -> {
+                                try {
+                                    return FrameProcessorObject.createPipeline(frameProcessors, videoInfoForTask);
+                                } catch (Exception e) {
+                                    throw new CompletionException(e);
+                                }
+                            }
+                    );
+
+                    processFrame(nextFrame.frame(), nextFrame.info(), processors);
+
+                } catch (Exception e) {
+                    throw new CompletionException(e);
                 }
 
-                // close the copied frame after processing
-                try (Frame frame = nextFrame.frame()) {
+            }, frameExecutor);
 
-                    // ignore frames from before a seek or stop has occurred
-                    if (!playbackOpen || generate != playbackGeneration) {
+            // return to the java fx thread once processing finish
+            task.whenComplete((result, error) -> Platform.runLater(() -> {
+
+                try (Frame frame = nextFrame.frame()) {
+                    // ignore results from an older play back
+                    if (!playbackOpen || generation != playbackGeneration) {
                         return;
                     }
 
                     if (error != null) {
-                        handlePlaybackError(
-                                new Exception("Frame processing failed", error));
+                        handlePlaybackError(new Exception("Frame processing failed", error));
                         return;
                     }
 
-                    preparedFrame = convertProcessedFrame(
+                    PreparedFrame completed = convertProcessedFrame(
                             frame,
                             nextFrame.info(),
                             nextFrame.logicalTimestampUs(),
-                            nextFrame.targetTimeNs());
+                            nextFrame.targetTimeNs()
+                    );
+
+                    // store the frame using its original sequence number
+                    completedFrames.put(sequence, completed);
 
                 } catch (Exception e) {
                     handlePlaybackError(e);
                 }
             }));
-            
+
         } catch (Exception e) {
             handlePlaybackError(e);
         }
@@ -408,7 +418,7 @@ public class VideoPlayerModel {
         while (playbackOpen) {
             Frame frame = grabFrame();
             if (frame == null) {
-                finishPlayback();
+                decoderFinished = true;
                 return null;
             }
 
@@ -496,26 +506,35 @@ public class VideoPlayerModel {
         // Task (1)
         writeDueAudio(now);
 
-        // Task (2)
-        if (preparedFrame != null && preparedFrame.targetTimeNs() <= now) {
-            // We have a prepared frame ready to go and it is due (or just past due!) so get it up on screen ASAP!
-            displayPreparedFrame(now);
+        // get the next completed frame, but only in correct order
+        if (preparedFrame == null) {
+        	preparedFrame = completedFrames.remove(nextFrameToDisplay);
         }
+        
+        // display frame when its scheduled time arrives
+        if (preparedFrame != null && preparedFrame.targetTimeNs() <= now) {
+        	displayPreparedFrame(now);
+        	nextFrameToDisplay++;
+        }
+        
+        // keep submitting frames while capacity is available
+        if (!pauseRequested && !decoderFinished && nextFrameToSubmit - nextFrameToDisplay < MAX_IN_FLIGHT && !prepareNextFrameQueued) {
 
-        // Task (3). We'll try and be nice to the GUI event loop here by queueing the prepareNextFrame call rather than
-        // hogging the thread and doing it here, hence the tricky callback and use of prepareNextFrameQueued. Feel free
-        // to replace this whole block with simple linear control flow logic
-        // such as: if (!pauseRequested && preparedFrame == null) prepareNextFrame();
-        // to compare.
-        if (!pauseRequested && preparedFrame == null && processingTask == null && !prepareNextFrameQueued) {
             prepareNextFrameQueued = true;
+            long generation = playbackGeneration;
+
             Platform.runLater(() -> {
                 prepareNextFrameQueued = false;
 
-                if (!pauseRequested) {
+                if (playbackOpen && !pauseRequested && generation == playbackGeneration) {
                     prepareNextFrame();
                 }
             });
+        }
+
+        // only finish after all submitted frames have been displayed
+        if (!pauseRequested && decoderFinished && nextFrameToDisplay == nextFrameToSubmit && pendingAudio.isEmpty()) {
+            finishPlayback();
         }
     }
 
@@ -607,7 +626,6 @@ public class VideoPlayerModel {
 
     private void closePlaybackResources() {
     	playbackGeneration++;
-    	processingTask = null;
         playbackTimer.stop();
         playbackOpen = false;
         preparedFrame = null;
@@ -619,6 +637,11 @@ public class VideoPlayerModel {
         frameProcessorsInitialised = false;
         workerPipelines = new ConcurrentHashMap<>();
         pipelineVideoInfo = null;
+        nextFrameToSubmit = 0;
+        nextFrameToDisplay = 0;
+        decoderFinished = false;
+        completedFrames.clear();
+        prepareNextFrameQueued = false;
         
         if (audioPlayer != null) {
             audioPlayer.close();
