@@ -310,7 +310,6 @@ public class VideoPlayerModel {
         playbackStartNs = 0;
         pauseStartedNs = pauseRequested ? System.nanoTime() : 0;
         frameProcessorsInitialised = false;
-        frameProcessorsInitialised = false;
         workerPipelines = new ConcurrentHashMap<>();
         pipelineVideoInfo = null;    
         }
@@ -323,7 +322,7 @@ public class VideoPlayerModel {
     }
 
     private void prepareNextFrame() {
-        if (!playbackOpen || preparedFrame != null) {
+        if (!playbackOpen || preparedFrame != null || processingTask != null) {
             return;
         }
 
@@ -363,6 +362,8 @@ public class VideoPlayerModel {
         	        throw new CompletionException(e);
         	    }
         	}, frameExecutor);
+        	
+        	processingTask = task;
 
             // return to the java fx thread when processing has finished
         	// only waiting for the task to finish, not return a result
@@ -506,7 +507,7 @@ public class VideoPlayerModel {
         // to replace this whole block with simple linear control flow logic
         // such as: if (!pauseRequested && preparedFrame == null) prepareNextFrame();
         // to compare.
-        if (!pauseRequested && preparedFrame == null && !prepareNextFrameQueued) {
+        if (!pauseRequested && preparedFrame == null && processingTask == null && !prepareNextFrameQueued) {
             prepareNextFrameQueued = true;
             Platform.runLater(() -> {
                 prepareNextFrameQueued = false;
@@ -615,7 +616,6 @@ public class VideoPlayerModel {
         playbackStartNs = 0;
         pauseStartedNs = 0;
         audioAvailable = false;
-        frameProcessorsInitialised = false;
         frameProcessorsInitialised = false;
         workerPipelines = new ConcurrentHashMap<>();
         pipelineVideoInfo = null;
