@@ -296,12 +296,15 @@ public class VideoPlayerModel {
         try {
         	FrameWork nextFrame = readNextVideoFrame();
         	
+        	// process the next frame and automatically close it when finished
         	if (nextFrame != null) {
-        		preparedFrame = frameProcessAndConvert(
-        				nextFrame.frame(),
-        				nextFrame.info(),
-        				nextFrame.logicalTimestampUs(),
-        				nextFrame.targetTimeNs());
+        		try (Frame frame = nextFrame.frame()) {
+            		preparedFrame = frameProcessAndConvert(
+            				frame,
+            				nextFrame.info(),
+            				nextFrame.logicalTimestampUs(),
+            				nextFrame.targetTimeNs());
+        		}
         	}
         	
         	
@@ -360,7 +363,11 @@ public class VideoPlayerModel {
             long targetTimeNs = playbackStartNs + relativeTimestampUs * 1_000L;
             
             // no effects or conversion are currently applied in this section now
-            return new FrameWork(frame, info, logicalTimestampUs, targetTimeNs);
+            
+            // creating an a copy so other threads can process the frame safely
+            // the decode may reuse memory when decoding subsequent frames
+            Frame frameCopy = frame.clone();
+            return new FrameWork(frameCopy, info, logicalTimestampUs, targetTimeNs);
         }
 
         return null;
