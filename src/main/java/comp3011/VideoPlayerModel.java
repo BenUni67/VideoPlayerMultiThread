@@ -49,6 +49,7 @@ public class VideoPlayerModel {
     private static final long AUDIO_LEAD_NS = 30_000_000L;
 
     private final List<FrameProcessor> frameProcessors;
+    private List<FrameProcessor> workerProcessors;
     
     // Runtime.getRuntime().avaliableProcessors() determines how many processors Java has available
     // Math.max(1, etc) will ensure that one worked will always be available even only if one processor is available
@@ -303,6 +304,8 @@ public class VideoPlayerModel {
         logicalPlaybackBaseUs = logicalTimestampUs;
         playbackStartNs = 0;
         pauseStartedNs = pauseRequested ? System.nanoTime() : 0;
+        frameProcessorsInitialised = false;
+        workerProcessors = null;
     }
 
     private void resumePlaybackClock(long now) {
@@ -328,12 +331,15 @@ public class VideoPlayerModel {
         	
         	// Process the effects on the frame on a thread in the background
         	// represents an asynchronous task that runs in the background and lets us handle its result when its done
+        	// Give this task its own reference to the current processing pipeline.
+        	List<FrameProcessor> processorsForTask = workerProcessors;
+
         	CompletableFuture<Void> task = CompletableFuture.runAsync(() -> {
-        		try {
-        			processFrame(nextFrame.frame(), nextFrame.info());
-        		} catch (Exception e) {
-        			throw new RuntimeException(e);
-        		}
+        	    try {
+        	        processFrame(nextFrame.frame(), nextFrame.info(), processorsForTask);
+        	    } catch (Exception e) {
+        	        throw new RuntimeException(e);
+        	    }
         	}, frameExecutor);
         	
         	processingTask = task;
@@ -590,6 +596,7 @@ public class VideoPlayerModel {
         pauseStartedNs = 0;
         audioAvailable = false;
         frameProcessorsInitialised = false;
+        workerProcessors = null;
 
         if (audioPlayer != null) {
             audioPlayer.close();
@@ -648,21 +655,16 @@ public class VideoPlayerModel {
         return Math.max(0, durationUs - frameDurationUs);
     }
 
-    private void processFrame(Frame frame, InfoFrame info) throws Exception {
-    	// Adding synchronized prevents multiple threads from accessing the frame processors at the same time
-        synchronized (frameProcessors) {
-            for (FrameProcessor processor : frameProcessors) {
-                processor.process(frame, info);
-            }
+    private void processFrame(Frame frame, InfoFrame info, List<FrameProcessor> processors) throws Exception {
+		// apply the effects of the worker in the correct order
+		for (FrameProcessor processor : processors) {
+			processor.process(frame, info);
         }
     } 
-
+    
     private void initialiseFrameProcessors(InfoVideo videoInfo) throws Exception {
-        synchronized (frameProcessors) {
-            for (FrameProcessor processor : frameProcessors) {
-                processor.initialise(videoInfo);
-            }
-        }
+    	// Creates a separate set of effects for workers
+    	workerProcessors = FrameProcessorObject.createPipeline(frameProcessors, videoInfo);
     }
 
     private Frame grabFrame() throws Exception {
