@@ -19,6 +19,7 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
 
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.bytedeco.javacv.Frame;
@@ -52,6 +53,10 @@ public class VideoPlayerModel {
     private final ExecutorService frameExecutor = Executors.newFixedThreadPool(
     		Math.max(1, Runtime.getRuntime().availableProcessors() -1));
     
+    // keeps track of the current frame being processed
+    private CompletableFuture<Void> processingTask;
+    // allows us to identify frames that aren't relevant anymore
+    private long playbackGeneration = 0;
     private final Queue<PendingAudio> pendingAudio = new ArrayDeque<>();
     private final BiConsumer<Integer, Integer> videoSizeChangedHandler;
     private final Consumer<Image> frameReadyHandler;
@@ -181,7 +186,8 @@ public class VideoPlayerModel {
     public void shutdown() {
         closePlaybackResources();
         // requests cancellation of running tasks, and will shut down pool when app exits.
-        frameExecutor.shutdownNow();
+        // using shutdown() instead of shutdownnow() allows for submitted tasks to finish and release frames
+        frameExecutor.shutdown();
     }
 
     private void seekRelative(long offsetUs) {
@@ -271,7 +277,9 @@ public class VideoPlayerModel {
     }
 
     private void resetPlaybackClock(long logicalTimestampUs) {
-        pendingAudio.clear();
+        playbackGeneration++;
+        processingTask = null;
+    	pendingAudio.clear();
         preparedFrame = null;
         currentTimestampUs = logicalTimestampUs;
         relativeSeekBaseUs = logicalTimestampUs;
@@ -296,18 +304,57 @@ public class VideoPlayerModel {
         try {
         	FrameWork nextFrame = readNextVideoFrame();
         	
-        	// process the next frame and automatically close it when finished
-        	if (nextFrame != null) {
-        		try (Frame frame = nextFrame.frame()) {
-            		preparedFrame = frameProcessAndConvert(
-            				frame,
-            				nextFrame.info(),
-            				nextFrame.logicalTimestampUs(),
-            				nextFrame.targetTimeNs());
-        		}
+        	if (nextFrame == null) {
+        		return;
         	}
         	
+        	long generate = playbackGeneration;
         	
+        	// Process the effects on the frame on a thread in the background
+        	// represents an asynchronous task that runs in the background and lets us handle its result when its done
+        	CompletableFuture<Void> task = CompletableFuture.runAsync(() -> {
+        		try {
+        			processFrame(nextFrame.frame(), nextFrame.info());
+        		} catch (Exception e) {
+        			throw new RuntimeException(e);
+        		}
+        	}, frameExecutor);
+        	
+        	processingTask = task;
+
+            // return to the java fx thread when processing has finished
+        	// only waiting for the task to finish, not return a result
+            task.whenComplete((result, error) -> Platform.runLater(() -> {
+
+                if (processingTask == task) {
+                    processingTask = null;
+                }
+
+                // close the copied frame after processing
+                try (Frame frame = nextFrame.frame()) {
+
+                    // ignore frames from before a seek or stop has occurred
+                    if (!playbackOpen || generate != playbackGeneration) {
+                        return;
+                    }
+
+                    if (error != null) {
+                        handlePlaybackError(
+                                new Exception("Frame processing failed", error));
+                        return;
+                    }
+
+                    preparedFrame = convertProcessedFrame(
+                            frame,
+                            nextFrame.info(),
+                            nextFrame.logicalTimestampUs(),
+                            nextFrame.targetTimeNs());
+
+                } catch (Exception e) {
+                    handlePlaybackError(e);
+                }
+            }));
+            
         } catch (Exception e) {
             handlePlaybackError(e);
         }
@@ -373,27 +420,23 @@ public class VideoPlayerModel {
         return null;
     }
     
-    // separating the frame processing from the decoding for multithreaded execution
-    private PreparedFrame frameProcessAndConvert(
+    // Will convert a processed frame into an image to display it
+    private PreparedFrame convertProcessedFrame(
     		Frame frame,
     		InfoFrame info,
     		long logicalTimestampUs,
     		long targetTimeNs) throws Exception {
     	
-    	// applies all the selected effects in order
-    	processFrame(frame, info);
-    	// converts the processed frame into the JavaFx image
-    	Image image = converter.convert(frame);
-    	
-    	// returns the instance of the completed frame as a PreparedFrames
-    	return new PreparedFrame(
-    			image,
-    			info.frameNumber(),
-    			info.timestampUs(),
-    			logicalTimestampUs,
-    			targetTimeNs,
-    			System.nanoTime()
-    			);
+    		// Converts frame to image
+    		Image image = converter.convert(frame);
+    		
+    		return new PreparedFrame(
+    				image,
+    				info.frameNumber(),
+    				info.timestampUs(),
+		            logicalTimestampUs,
+		            targetTimeNs,
+	            	System.nanoTime());
     }
 
     // This is called on a heart beat by the GUI thread. We want to be co-operative here by (a) not blocking, and (b)
@@ -435,7 +478,7 @@ public class VideoPlayerModel {
 
     private void displayPreparedFrame(long now) {
         PreparedFrame frame = preparedFrame;
-        preparedFrame = null;s
+        preparedFrame = null;
         currentTimestampUs = frame.logicalTimestampUs();
         relativeSeekBaseUs = NO_SEEK_REQUEST;
 
@@ -520,6 +563,8 @@ public class VideoPlayerModel {
     }
 
     private void closePlaybackResources() {
+    	playbackGeneration++;
+    	processingTask = null;
         playbackTimer.stop();
         playbackOpen = false;
         preparedFrame = null;
@@ -588,14 +633,19 @@ public class VideoPlayerModel {
     }
 
     private void processFrame(Frame frame, InfoFrame info) throws Exception {
-        for (FrameProcessor processor : frameProcessors) {
-            processor.process(frame, info);
+    	// Adding synchronized prevents multiple threads from accessing the frame processors at the same time
+        synchronized (frameProcessors) {
+            for (FrameProcessor processor : frameProcessors) {
+                processor.process(frame, info);
+            }
         }
-    }
+    } 
 
     private void initialiseFrameProcessors(InfoVideo videoInfo) throws Exception {
-        for (FrameProcessor processor : frameProcessors) {
-            processor.initialise(videoInfo);
+        synchronized (frameProcessors) {
+            for (FrameProcessor processor : frameProcessors) {
+                processor.initialise(videoInfo);
+            }
         }
     }
 
