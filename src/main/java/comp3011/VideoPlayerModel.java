@@ -22,6 +22,8 @@ import java.util.function.Consumer;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletionException;
 
 import org.bytedeco.javacv.FFmpegFrameGrabber;
 import org.bytedeco.javacv.Frame;
@@ -49,8 +51,11 @@ public class VideoPlayerModel {
     private static final long AUDIO_LEAD_NS = 30_000_000L;
 
     private final List<FrameProcessor> frameProcessors;
-    private List<FrameProcessor> workerProcessors;
+    // concurrent hashmap to associate each worker thread with its own list of effects
+    private Map<Thread, List<FrameProcessor>> workerPipelines = new ConcurrentHashMap<>();
+    private InfoVideo pipelineVideoInfo;
     
+   
     // Runtime.getRuntime().avaliableProcessors() determines how many processors Java has available
     // Math.max(1, etc) will ensure that one worked will always be available even only if one processor is available
     private final ExecutorService frameExecutor = Executors.newFixedThreadPool(
@@ -305,8 +310,10 @@ public class VideoPlayerModel {
         playbackStartNs = 0;
         pauseStartedNs = pauseRequested ? System.nanoTime() : 0;
         frameProcessorsInitialised = false;
-        workerProcessors = null;
-    }
+        frameProcessorsInitialised = false;
+        workerPipelines = new ConcurrentHashMap<>();
+        pipelineVideoInfo = null;    
+        }
 
     private void resumePlaybackClock(long now) {
         if (pauseStartedNs > 0 && playbackStartNs > 0) {
@@ -332,17 +339,30 @@ public class VideoPlayerModel {
         	// Process the effects on the frame on a thread in the background
         	// represents an asynchronous task that runs in the background and lets us handle its result when its done
         	// Give this task its own reference to the current processing pipeline.
-        	List<FrameProcessor> processorsForTask = workerProcessors;
+        	// each task keeps the pipeline collection belonging to its play back
+        	Map<Thread, List<FrameProcessor>> pipelinesForTask = workerPipelines;
+        	InfoVideo videoInfoForTask = pipelineVideoInfo;
 
         	CompletableFuture<Void> task = CompletableFuture.runAsync(() -> {
         	    try {
-        	        processFrame(nextFrame.frame(), nextFrame.info(), processorsForTask);
+        	    	// get or create this threads its own processor pipeline
+        	        List<FrameProcessor> processors = pipelinesForTask.computeIfAbsent(
+        	                Thread.currentThread(),
+        	                thread -> {
+        	                    try {
+        	                        return FrameProcessorObject.createPipeline(frameProcessors, videoInfoForTask);
+        	                    } catch (Exception e) {
+        	                        throw new CompletionException(e);
+        	                    }
+        	                }
+        	        );
+
+        	        processFrame(nextFrame.frame(), nextFrame.info(), processors);
+
         	    } catch (Exception e) {
-        	        throw new RuntimeException(e);
+        	        throw new CompletionException(e);
         	    }
         	}, frameExecutor);
-        	
-        	processingTask = task;
 
             // return to the java fx thread when processing has finished
         	// only waiting for the task to finish, not return a result
@@ -596,8 +616,10 @@ public class VideoPlayerModel {
         pauseStartedNs = 0;
         audioAvailable = false;
         frameProcessorsInitialised = false;
-        workerProcessors = null;
-
+        frameProcessorsInitialised = false;
+        workerPipelines = new ConcurrentHashMap<>();
+        pipelineVideoInfo = null;
+        
         if (audioPlayer != null) {
             audioPlayer.close();
             audioPlayer = null;
@@ -663,8 +685,9 @@ public class VideoPlayerModel {
     } 
     
     private void initialiseFrameProcessors(InfoVideo videoInfo) throws Exception {
-    	// Creates a separate set of effects for workers
-    	workerProcessors = FrameProcessorObject.createPipeline(frameProcessors, videoInfo);
+    	// starts a fresh set of worker pipelines for the play back
+    	pipelineVideoInfo = videoInfo;
+    	workerPipelines = new ConcurrentHashMap<>();
     }
 
     private Frame grabFrame() throws Exception {
