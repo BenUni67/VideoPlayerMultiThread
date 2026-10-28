@@ -63,7 +63,7 @@ public class VideoPlayerModel {
     
     // limits how many frames can be processed at once
     // assistance by AI for this
-    private static final int MAX_IN_FLIGHT = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() - 1));
+    private static final int MAX_IN_FLIGHT = Math.max(1, Math.min(6, Runtime.getRuntime().availableProcessors() - 1));
 
     // stores processed frames until they can be displayed in the correct order
     private final Map<Long, PreparedFrame> completedFrames = new HashMap<>();
