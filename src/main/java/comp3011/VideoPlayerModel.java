@@ -71,6 +71,7 @@ public class VideoPlayerModel {
     private long nextFrameToSubmit = 0;
     private long nextFrameToDisplay = 0;
     private boolean decoderFinished = false;
+    private boolean showPaused = false;
     
     // allows us to identify frames that aren't relevant anymore
     private long playbackGeneration = 0;
@@ -325,6 +326,7 @@ public class VideoPlayerModel {
         decoderFinished = false;
         completedFrames.clear();
         prepareNextFrameQueued = false;
+        showPaused = pauseRequested;
         }
 
     private void resumePlaybackClock(long now) {
@@ -396,8 +398,7 @@ public class VideoPlayerModel {
                     PreparedFrame completed = convertProcessedFrame(
                             frame,
                             nextFrame.info(),
-                            nextFrame.logicalTimestampUs(),
-                            nextFrame.targetTimeNs()
+                            nextFrame.logicalTimestampUs()
                     );
 
                     // store the frame using its original sequence number
@@ -460,14 +461,13 @@ public class VideoPlayerModel {
             
             long relativeTimestampUs = Math.max(0,  timestampUs - firstTimestampUs);
             long logicalTimestampUs = logicalPlaybackBaseUs + relativeTimestampUs;
-            long targetTimeNs = playbackStartNs + relativeTimestampUs * 1_000L;
             
             // no effects or conversion are currently applied in this section now
             
             // creating an a copy so other threads can process the frame safely
             // the decode may reuse memory when decoding subsequent frames
             Frame frameCopy = frame.clone();
-            return new FrameWork(frameCopy, info, logicalTimestampUs, targetTimeNs);
+            return new FrameWork(frameCopy, info, logicalTimestampUs);
         }
 
         return null;
@@ -477,8 +477,7 @@ public class VideoPlayerModel {
     private PreparedFrame convertProcessedFrame(
     		Frame frame,
     		InfoFrame info,
-    		long logicalTimestampUs,
-    		long targetTimeNs) throws Exception {
+    		long logicalTimestampUs) throws Exception {
     	
     		// Converts frame to image
     		Image image = converter.convert(frame);
@@ -488,7 +487,6 @@ public class VideoPlayerModel {
     				info.frameNumber(),
     				info.timestampUs(),
 		            logicalTimestampUs,
-		            targetTimeNs,
 	            	System.nanoTime());
     }
 
@@ -511,10 +509,15 @@ public class VideoPlayerModel {
         	preparedFrame = completedFrames.remove(nextFrameToDisplay);
         }
         
-        // display frame when its scheduled time arrives
-        if (preparedFrame != null && preparedFrame.targetTimeNs() <= now) {
-        	displayPreparedFrame(now);
-        	nextFrameToDisplay++;
+        if (preparedFrame == null) {
+            preparedFrame = completedFrames.remove(nextFrameToDisplay);
+        }
+
+        // display the frames on time, or show one preview frame after a pause
+        if (preparedFrame != null && ((!pauseRequested && frameTargetTimeNs(preparedFrame.logicalTimestampUs()) <= now) || (pauseRequested && showPaused))) {
+            displayPreparedFrame(now);
+            nextFrameToDisplay++;
+            showPaused = false;
         }
         
         // keep submitting frames while capacity is available
@@ -546,8 +549,8 @@ public class VideoPlayerModel {
 
         // Dump some logging to the console once per second so that real time performance can be monitored.
         if (intFrameRate > 0 && frame.frameNumber() % intFrameRate == 0) {
-            long remainingUs = (frame.targetTimeNs() - frame.preparedAtNs()) / 1_000L;
-            if (remainingUs < 0) {
+        	long remainingUs = (frameTargetTimeNs(frame.logicalTimestampUs()) - frame.preparedAtNs()) / 1_000L;            
+        	if (remainingUs < 0) {
                 System.out.printf("Frame headroom is \u001B[31m%5dus\u001B[0m out of %dus spare.%n",
                         remainingUs,
                         videoFrameDurationUs);
@@ -642,6 +645,7 @@ public class VideoPlayerModel {
         decoderFinished = false;
         completedFrames.clear();
         prepareNextFrameQueued = false;
+        showPaused = false;
         
         if (audioPlayer != null) {
             audioPlayer.close();
@@ -699,6 +703,11 @@ public class VideoPlayerModel {
 
         return Math.max(0, durationUs - frameDurationUs);
     }
+    
+    // calculates a frames current display time using playback clock
+    private long frameTargetTimeNs(long logicalTimestampUs) {
+    	return playbackStartNs + Math.max(0, logicalTimestampUs - logicalPlaybackBaseUs) * 1_000L; 
+    }
 
     private void processFrame(Frame frame, InfoFrame info, List<FrameProcessor> processors) throws Exception {
 		// apply the effects of the worker in the correct order
@@ -751,7 +760,6 @@ public class VideoPlayerModel {
             int frameNumber,
             long mediaTimestampUs,
             long logicalTimestampUs,
-            long targetTimeNs,
             long preparedAtNs) {
     }
     
@@ -759,8 +767,7 @@ public class VideoPlayerModel {
     private record FrameWork(
     		Frame frame,
     		InfoFrame info,
-    		long logicalTimestampUs,
-    		long targetTimeNs) {
+    		long logicalTimestampUs) {
     }
     	
 
