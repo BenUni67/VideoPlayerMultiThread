@@ -338,7 +338,7 @@ public class VideoPlayerModel {
 
     private void prepareNextFrame() {
 
-        // does allow more frames than limit
+        // prevents too many frames from being processed at the same time
         if (!playbackOpen || decoderFinished || nextFrameToSubmit - nextFrameToDisplay >= MAX_IN_FLIGHT) {
             return;
         }
@@ -508,10 +508,6 @@ public class VideoPlayerModel {
         if (preparedFrame == null) {
         	preparedFrame = completedFrames.remove(nextFrameToDisplay);
         }
-        
-        if (preparedFrame == null) {
-            preparedFrame = completedFrames.remove(nextFrameToDisplay);
-        }
 
         // display the frames on time, or show one preview frame after a pause
         if (preparedFrame != null && ((!pauseRequested && frameTargetTimeNs(preparedFrame.logicalTimestampUs()) <= now) || (pauseRequested && showPaused))) {
@@ -527,10 +523,15 @@ public class VideoPlayerModel {
             long generation = playbackGeneration;
 
             Platform.runLater(() -> {
+            	// ignore callback to an older play back
+            	if (!playbackOpen || generation != playbackGeneration) {
+            		return;
+            	}
+            	
                 prepareNextFrameQueued = false;
 
-                if (playbackOpen && !pauseRequested && generation == playbackGeneration) {
-                    prepareNextFrame();
+                if (!pauseRequested) {
+                	prepareNextFrame();
                 }
             });
         }
